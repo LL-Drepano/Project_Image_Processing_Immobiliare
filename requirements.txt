@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+httpx
+numpy
+opencv-python-headless
+scikit-image

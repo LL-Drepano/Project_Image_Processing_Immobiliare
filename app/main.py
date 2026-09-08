@@ -10,7 +10,7 @@ from skimage.restoration import estimate_sigma
 from skimage.color import rgb2lab
 
 
-app = FastAPI(title="Photo Quality Metrics Service — Calibrated Diagnosis v4")
+app = FastAPI(title="Photo Quality Metrics Service — Calibrated Diagnosis v5")
 
 
 # ============================================================
@@ -292,6 +292,88 @@ def calculate_diagnosis_signals(
         "sharpness_raw": sharpness_raw,
         "sharpness_denoised": sharpness_denoised,
         "high_frequency_ratio": high_frequency_ratio,
+    }
+
+
+def calculate_tile_blur(
+    image: np.ndarray,
+    grid: int = 4,
+    tile_threshold: float = 0.40,
+    flat_std: float = 0.02,
+) -> dict:
+    """
+    Aggregazione a blocchi della stessa metrica blur_effect
+    (Crété-Roffet 2007), come nella letteratura block-based
+    (Pech-Pacheco 2000, Marziliano 2002, CPBD 2011).
+
+    Il valore globale viene ingannato da una zona nitida
+    (es. centro di uno zoom blur): corridoio_04 dà 0.50 globale
+    su una foto illeggibile. Qui l'immagine (già ridotta a 1280)
+    viene divisa in una griglia grid x grid; le tessere piatte
+    (std < flat_std, pareti senza contenuto) vengono scartate;
+    una tessera è sfocata se blur_effect >= tile_threshold,
+    che è la soglia "low" già calibrata (0.40, sopra il massimo
+    osservato sulle originali pulite, ~0.37).
+
+    Restituisce quante tessere avevano contenuto, la mediana
+    del loro blur_effect e la frazione di tessere sfocate.
+    Sulle 30 foto (pipeline del servizio): foto pulite e non
+    sfocate al massimo 38%, foto sfocate sintetiche almeno 73%,
+    corridoio_04 81%.
+
+    Limite noto: la metrica risponde poco al mosso direzionale
+    forte (corridoio_04 ha tessere a 0.55-0.59 pur essendo
+    illeggibile). Una metrica specifica per il motion blur
+    (es. CPBD, stima cepstrale) calibrata su foto mosse reali
+    è il prossimo passo.
+    """
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY,
+    ).astype(np.float32) / 255.0
+
+    height, width = gray.shape
+    tile_h = height // grid
+    tile_w = width // grid
+
+    values = []
+
+    for i in range(grid):
+        for j in range(grid):
+            tile = gray[
+                i * tile_h:(i + 1) * tile_h,
+                j * tile_w:(j + 1) * tile_w,
+            ]
+
+            if tile.size == 0 or float(np.std(tile)) < flat_std:
+                continue
+
+            values.append(
+                float(
+                    blur_effect(
+                        tile,
+                        h_size=11,
+                        channel_axis=None,
+                    )
+                )
+            )
+
+    if not values:
+        return {
+            "blur_tiles_n": 0,
+            "blur_tiles_median": None,
+            "blur_tiles_blurred_frac": None,
+        }
+
+    arr = np.array(values)
+
+    return {
+        "blur_tiles_n": int(arr.size),
+        "blur_tiles_median": float(np.median(arr)),
+        "blur_tiles_blurred_frac": float(
+            np.mean(arr >= tile_threshold)
+        ),
     }
 
 
@@ -787,7 +869,7 @@ def calculate_resolution_signals(
 # CALIBRATED DIAGNOSIS
 # ============================================================
 
-DIAGNOSIS_VERSION = "v4_reconstruction_risk_2026-09-08"
+DIAGNOSIS_VERSION = "v5_tile_blur_2026-09-08"
 
 
 def classify_blur(
@@ -1010,28 +1092,20 @@ def calculate_reconstruction_risk(
     resolution_risk: str,
 ) -> dict:
     """
-    Rischio che un livello ricostruttivo (L4) inventi o alteri
-    contenuto reale dell'immobile.
+    Segnale descrittivo, NON usato nel routing.
+    Il routing usa il candidate recoverability gate:
+    verifiability_risk = high AND resolution_risk != none.
 
-    Derivato dall'incrocio tra i flag di input e le 29 etichette
-    umane di fedeltà su L4 (8 settembre 2026, 7 alterazioni):
+    Verificato sulla reference finale (30 L4, 8 alterazioni:
+    6 input_ambiguity + 2 l4_direct), high o medium intercetta
+    5/6 ambiguity con 5/22 falsi positivi; il candidate gate
+    ottiene 5/6 con 1/22. Il livello high (compressione >= 1.20)
+    scatta su 3 foto, tutte alterate, tutte già coperte dal gate.
+    Conservato come segnale di confronto e per audit.
 
-    - compressione (blockiness_score >= 1.20, cioè compression
-      high o uncertain): 3 foto, 3 alterazioni, tutte gravi
-      -> high
-    - risoluzione (lato corto <= 500): 4 foto, 3 alterazioni
-    - blur high: 4 foto, 2 alterazioni
-    - noise high: 3 foto, 1 alterazione
-      -> medium
-    - esposizione (under/over, qualsiasi livello): 8 foto,
-      0 alterazioni -> ESCLUSA dal rischio
-
-    È un'ipotesi calibrata su 7 casi positivi.
-    Non decide il routing: n8n decide cosa fare con
-    high / medium / none. Il caso camera_da_letto_05
-    (prese elettriche) non viene intercettato da nessun
-    segnale di input: per questo la conferma umana dopo L4
-    resta necessaria.
+    Regola: high se compression high/uncertain; medium se
+    resolution_risk high, blur high o noise high; none altrimenti.
+    L'esposizione è esclusa (8 foto, 0 alterazioni).
     """
 
     reasons = []
@@ -1067,6 +1141,7 @@ def build_calibrated_diagnosis(
     exposure_signals: dict,
     color_signals: dict,
     resolution_signals: dict,
+    tile_blur: dict,
 ) -> dict:
     """
     Costruisce la parte deterministica della diagnosi.
@@ -1096,6 +1171,20 @@ def build_calibrated_diagnosis(
         signals["blur_effect"],
         noise_level,
     )
+
+    # Override a blocchi: se più di metà delle tessere con contenuto
+    # è almeno leggermente sfocata (>= 0.40), il blur è almeno medium
+    # anche se il valore globale è basso (zoom/motion blur con centro
+    # nitido, es. corridoio_04: globale 0.50, tessere 81%).
+    blur_tiles_override = False
+    tiles_frac = tile_blur.get("blur_tiles_blurred_frac")
+    if (
+        tiles_frac is not None
+        and tiles_frac > 0.5
+        and blur_level in {"none", "low", "uncertain"}
+    ):
+        blur_level = "medium"
+        blur_tiles_override = True
 
     compression_level = classify_compression(
         compression_signals["blockiness_score"],
@@ -1155,6 +1244,7 @@ def build_calibrated_diagnosis(
         "deterministic_issue_detected": deterministic_issue_detected,
 
         "blur": blur_level,
+        "blur_tiles_override": blur_tiles_override,
         "noise": noise_level,
         "compression": compression_level,
         "underexposure": underexposure_level,
@@ -1182,7 +1272,8 @@ def build_calibrated_diagnosis(
             verifiability_risk in {"medium", "high"}
         ),
 
-        # Rischio che L4 inventi contenuto: segnale per il routing.
+        # Segnale descrittivo di confronto, non usato nel routing
+        # (vedi docstring di calculate_reconstruction_risk).
         "reconstruction_risk": reconstruction["reconstruction_risk"],
         "reconstruction_risk_reasons": reconstruction[
             "reconstruction_risk_reasons"
@@ -1348,12 +1439,17 @@ async def diagnose_image(
         input_image
     )
 
+    tile_blur = calculate_tile_blur(
+        diagnosis_image
+    )
+
     calibrated = build_calibrated_diagnosis(
         signals,
         compression_signals,
         exposure_signals,
         color_signals,
         resolution_signals,
+        tile_blur,
     )
 
     return {
@@ -1368,6 +1464,19 @@ async def diagnose_image(
         "noise_sigma": round(
             signals["noise_sigma"],
             6,
+        ),
+
+        # Blur a blocchi (griglia 4x4 sull'immagine di diagnosi)
+        "blur_tiles_n": tile_blur["blur_tiles_n"],
+        "blur_tiles_median": (
+            round(tile_blur["blur_tiles_median"], 4)
+            if tile_blur["blur_tiles_median"] is not None
+            else None
+        ),
+        "blur_tiles_blurred_frac": (
+            round(tile_blur["blur_tiles_blurred_frac"], 4)
+            if tile_blur["blur_tiles_blurred_frac"] is not None
+            else None
         ),
 
         # Segnali raw di compressione JPEG / blockiness.

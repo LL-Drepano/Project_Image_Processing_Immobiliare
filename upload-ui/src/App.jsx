@@ -5,10 +5,10 @@ const CLOUD_NAME = 'fmlegosh'
 const UPLOAD_PRESET = 'upload_ui'
 
 const N8N_WEBHOOK_URL =
-  'http://localhost:5678/webhook-test/photo_quality'
+  'http://localhost:5678/webhook/photo_quality'
 
 const N8N_CONFIRM_L4_URL =
-  'http://localhost:5678/webhook-test/confirm_l4'
+  'http://localhost:5678/webhook/confirm_l4'
 
 function App() {
   const [file, setFile] = useState(null)

@@ -1,0 +1,1369 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/diagnosi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url_input\": \"{{ $json.url_input }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1072,
+        16
+      ],
+      "id": "74630e5a-21ca-4d92-9cc2-cdfc2e87ec7b",
+      "name": "HTTP Request - Diagnosi FastAPI"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5d33f7f0-3997-4c62-bd59-05b94153fd90",
+              "name": "richiede_verifica_colore",
+              "value": "={{\n  $json.neutral_chroma_shift == null ||\n  $json.neutral_chroma_shift >= 3 ||\n  $json.neutral_region_pct < 5\n}}",
+              "type": "boolean"
+            },
+            {
+              "id": "b65ca763-247e-489a-8b97-78160864b999",
+              "name": "color_prefilter_threshold",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "f45c337a-5d6b-48c0-8162-1904b0f6c591",
+              "name": "color_prefilter_reason",
+              "value": "={{\n  $json.neutral_chroma_shift == null\n    ? 'neutral_shift_unavailable'\n    : $json.neutral_region_pct < 5\n      ? 'insufficient_neutral_region'\n      : $json.neutral_chroma_shift >= 3\n        ? 'neutral_chroma_shift_above_threshold'\n        : 'below_threshold'\n}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -608,
+        16
+      ],
+      "id": "762da60b-4541-4517-8ec8-d7ffb52c72a4",
+      "name": "Prefiltro Colore"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b63c90cf-79b6-4e5d-9000-c937c66c9c12",
+              "leftValue": "={{ $json.richiede_verifica_colore }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -400,
+        16
+      ],
+      "id": "852227fa-18a3-449e-b7d8-e40aaacdeb8f",
+      "name": "Serve Triage Colore?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "541b89f8-da6b-4cbd-a27b-dffe82a35c3b",
+              "name": "esito_colore",
+              "value": "normale",
+              "type": "string"
+            },
+            {
+              "id": "32211d4e-c978-4999-bec4-3f3f42fc5f2c",
+              "name": "verifica_colore_eseguita",
+              "value": false,
+              "type": "boolean"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -192,
+        112
+      ],
+      "id": "c2135453-1092-45d5-8a83-c42858d018e3",
+      "name": "Skip Triage Colore"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const testo = $json.candidates?.[0]?.content?.parts?.[0]?.text;\n\nif (!testo) {\n  throw new Error('Risposta Gemini priva del campo text');\n}\n\nconst risultato = JSON.parse(testo);\n\nconst origine = {\n  ...$('Prepara Immagine Base64').item.json\n};\n\ndelete origine.immagine_base64;\n\nreturn {\n  json: {\n    ...origine,\n    ...risultato,\n\n    verifica_colore_eseguita: true,\n\n    token_input_colore:\n      $json.usageMetadata?.promptTokenCount ?? null,\n\n    token_output_colore:\n      $json.usageMetadata?.candidatesTokenCount ?? null,\n\n    token_totali_colore:\n      $json.usageMetadata?.totalTokenCount ?? null\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -64
+      ],
+      "id": "09d525ea-514f-4b8a-acfa-1aad234b8284",
+      "name": "Parsing"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"inline_data\": {\n            \"mime_type\": \"{{ $json.mime_type_immagine }}\",\n            \"data\": \"{{ $json.immagine_base64 }}\"\n          }\n        },\n        {\n          \"text\": \"Analizza esclusivamente la resa cromatica di questa fotografia immobiliare. Il tuo compito NON è stabilire se i colori corrispondano sicuramente alla realtà dell'immobile, perché non puoi conoscerla. Devi soltanto valutare se la resa cromatica appare plausibile oppure se mostra indizi forti di una possibile alterazione artificiale. Considera normale una fotografia naturalmente calda o fredda dovuta a illuminazione interna, luce solare, parquet, legno, pareti beige o colorate, arredi o materiali presenti nella scena. Non classificare come sospetta una foto solo perché appare calda, fredda, satura o desaturata. Restituisci 'sospetto' soltanto quando l'alterazione appare chiaramente innaturale, globale e difficilmente spiegabile con illuminazione, materiali o colori plausibili della scena. Se non riesci a distinguere con sufficiente affidabilità una dominante artificiale da una caratteristica reale dell'ambiente, restituisci 'incerto'. Se la resa cromatica appare plausibile, restituisci 'normale'. La motivazione deve essere breve, prudente e riferita esclusivamente a ciò che è visibile.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseSchema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"esito_colore\": {\n          \"type\": \"string\",\n          \"enum\": [\n            \"normale\",\n            \"sospetto\",\n            \"incerto\"\n          ]\n        },\n        \"anomalia_colore\": {\n          \"type\": \"string\",\n          \"enum\": [\n            \"nessuna\",\n            \"troppo_calda\",\n            \"troppo_fredda\",\n            \"troppo_satura\",\n            \"troppo_desaturata\",\n            \"dominante_colore\",\n            \"altro\"\n          ]\n        },\n        \"confidenza\": {\n          \"type\": \"number\"\n        },\n        \"motivazione\": {\n          \"type\": \"string\"\n        }\n      },\n      \"required\": [\n        \"esito_colore\",\n        \"anomalia_colore\",\n        \"confidenza\",\n        \"motivazione\"\n      ]\n    }\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        -64
+      ],
+      "id": "2218d7a0-011b-441b-a154-8fcf3f011251",
+      "name": "HTTP Request - Gemini VLM"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url_input }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -192,
+        -64
+      ],
+      "id": "06687f4f-5033-4c0c-ab40-9f817a4a90b7",
+      "name": "HTTP Request - Scarica Immagine Cloudinary"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfor (let i = 0; i < items.length; i++) {\n  const buffer = await this.helpers.getBinaryDataBuffer(i, 'data');\n\n  items[i].json.immagine_base64 = buffer.toString('base64');\n  items[i].json.mime_type_immagine =\n    items[i].binary?.data?.mimeType || 'image/jpeg';\n}\n\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        -64
+      ],
+      "id": "fac68b01-95dc-48d4-8aef-38bb3f2e1018",
+      "name": "Prepara Immagine Base64"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\n\nconst ROUTING_VERSION = 'v3_2026-09-08';\n\n// 0. Monocromatica -> RETAKE\nif (d.p95_saturation !== null && d.p95_saturation < 8) {\n  return {\n    json: {\n      ...d,\n      route: 'RETAKE',\n      route_motivo:\n        'foto monocromatica: il colore non può essere ricostruito senza inventarlo',\n      routing_version: ROUTING_VERSION\n    }\n  };\n}\n\n// 1. Perdita seria di informazione\nconst serio =\n  ['medium', 'high'].includes(d.blur) ||\n  ['high', 'uncertain'].includes(d.compression) ||\n  d.noise === 'high' ||\n  d.resolution_risk === 'high';\n\n// 2. Problema significativo di esposizione -> L4\nconst esposizioneDaRecovery =\n  ['medium', 'high'].includes(d.underexposure) ||\n  ['medium', 'high'].includes(d.overexposure);\n\n// 3. Problema leggero di luce / colore -> L1\nconst luceColore =\n  d.underexposure === 'low' ||\n  d.overexposure === 'low' ||\n  ['sospetto', 'incerto'].includes(d.esito_colore);\n\nlet route;\nlet route_motivo;\n\nif (serio) {\n  const retake =\n    d.verifiability_risk === 'high' &&\n    d.resolution_risk !== 'none';\n\n  route = retake ? 'RETAKE' : 'L4';\n\n  route_motivo = retake\n    ? 'perdita di informazione con risoluzione insufficiente (candidate gate)'\n    : 'perdita di informazione recuperabile: L4 con conferma umana';\n\n} else if (esposizioneDaRecovery) {\n  route = 'L4';\n  route_motivo =\n    'problema significativo di esposizione: recovery L4 con conferma umana';\n\n} else if (luceColore) {\n  route = 'L1';\n  route_motivo = 'problema leggero di luce o colore';\n\n} else {\n  route = 'KEEP';\n  route_motivo = 'nessun problema rilevato';\n}\n\nreturn {\n  json: {\n    ...d,\n    route,\n    route_motivo,\n    routing_version: ROUTING_VERSION\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        32
+      ],
+      "id": "30dc13f3-d340-4a53-9cf1-30d8312108a8",
+      "name": "Classifica Route"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "KEEP",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "260a4978-ae58-4b85-ae96-2f8667c02ce2"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "KEEP"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "4934c4fd-03ac-48fe-be5c-ef762e530ea6",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "L1",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "L1"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "bc6d766c-2404-4353-86ae-c37380a90580",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "L4",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "L4"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "bf54a36d-945a-46df-9354-1b3c1cca468c",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "RETAKE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RETAKE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        704,
+        32
+      ],
+      "id": "8ad60dda-f71d-4cbb-b0f1-b94a8e86419b",
+      "name": "Switch Route"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfeecdda-ce06-4ca3-a0da-8e3ed88bf41d",
+              "name": "final_output_url",
+              "value": "={{ $json.url_input }}",
+              "type": "string"
+            },
+            {
+              "id": "9650c5bc-e2e9-420d-97d2-5c320abde57b",
+              "name": "human_confirmation_required",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "869327aa-80a0-4874-9984-2db410c48d06",
+              "name": "final_status",
+              "value": "KEEP",
+              "type": "string"
+            },
+            {
+              "id": "3f68e9db-d8b7-4d09-8e3c-2abd335ca985",
+              "name": "livello_applicato",
+              "value": "KEEP",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        -320
+      ],
+      "id": "7b86ea59-9ef2-44eb-bb4d-10e988804aad",
+      "name": "Finalizza KEEP"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "07c751fe-c974-494b-9216-aac8d9cdd216",
+              "name": "url_l1",
+              "value": "={{ $json.url_input.replace('/upload/', '/upload/c_limit,w_4500,h_4500/e_improve/') }}",
+              "type": "string"
+            },
+            {
+              "id": "6ce71ec7-b739-40c4-bf93-487c927530f4",
+              "name": "l1_started_ms",
+              "value": "={{ Date.now() }}",
+              "type": "string"
+            },
+            {
+              "id": "c99f4e3f-0d1d-43f5-bc86-bb5563171ab4",
+              "name": "l1_started_iso",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        -80
+      ],
+      "id": "d8c11090-3907-4a32-b743-b91518e6ed9d",
+      "name": "Prepara L1"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1424,
+        -80
+      ],
+      "id": "79a15f94-96dc-4728-8bd0-049b9803835f",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url_l1 }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1232,
+        -80
+      ],
+      "id": "88bcca23-0b3b-41a6-92b6-343af56d7fc2",
+      "name": "HTTP Request L1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfeecdda-ce06-4ca3-a0da-8e3ed88bf41d",
+              "name": "final_output_url",
+              "value": "={{ $json.url_l1 }}",
+              "type": "string"
+            },
+            {
+              "id": "869327aa-80a0-4874-9984-2db410c48d06",
+              "name": "final_status",
+              "value": "L1",
+              "type": "string"
+            },
+            {
+              "id": "d1cec0ce-69b0-479b-aa2a-aba25d6cb4c2",
+              "name": "livello_applicato",
+              "value": "L1",
+              "type": "string"
+            },
+            {
+              "id": "9650c5bc-e2e9-420d-97d2-5c320abde57b",
+              "name": "human_confirmation_required",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "d2ea6fa9-29ef-4237-afb8-9c408d685d7d",
+              "name": "latenza_ms",
+              "value": "={{ Date.now() - Number($json.l1_started_ms) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1584,
+        -80
+      ],
+      "id": "d30c0ee8-f8d5-4d15-b229-4d1389716d1b",
+      "name": "Finalizza L1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.cloudinary.com/v1_1/fmlegosh/image/upload",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "folder",
+              "value": "foto_test/output/L4"
+            },
+            {
+              "name": "public_id",
+              "value": "={{ $json.photo_id }}"
+            },
+            {
+              "name": "overwrite",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1712,
+        160
+      ],
+      "id": "895eb7cc-9f4b-41b7-b7c2-8e779478982a",
+      "name": "Cloudinary Upload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/images/edits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-image-2-2026-04-21\",\n  \"images\": [\n    {\n      \"image_url\": \"{{ $json.url_input }}\"\n    }\n  ],\n  \"prompt\": \"Improve only the photographic quality of this real-estate photo. Correct exposure, white balance, color cast, contrast, noise, compression artifacts and recoverable lack of sharpness. Preserve exactly the factual content of the property. Do not add, remove, replace, move or redesign objects, furniture, fixtures or architectural elements. Preserve geometry, materials, textures, structural defects, stains, cracks, wear, clutter, text and the view through windows or openings. Do not declutter, stage, redecorate or repair the property. Do not change camera viewpoint, framing or crop. If a defect cannot be corrected without inventing detail, leave it unchanged.\",\n  \"quality\": \"medium\",\n  \"size\": \"auto\",\n  \"output_format\": \"png\",\n  \"n\": 1\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1200,
+        160
+      ],
+      "id": "6a811f6b-5a13-4d5f-8340-c2fdb816d094",
+      "name": "GPT Image"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1376,
+        160
+      ],
+      "id": "7b85cd6c-578b-41b4-b1b8-a5914653f227",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f7d60624-0570-4552-89b3-60fb4757e7ac",
+              "name": "l4_started_ms",
+              "value": "={{ Date.now() }}",
+              "type": "string"
+            },
+            {
+              "id": "bb8777f4-df25-46ae-b2e4-451ea254ac5a",
+              "name": "l4_started_iso",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        160
+      ],
+      "id": "2a8d1890-5e6b-464d-b281-b4a2d9e9b5da",
+      "name": "Start L4 Timer"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "if (!$json.data?.[0]?.b64_json) {\n  throw new Error(\n    `Output OpenAI mancante per: ${$json.photo_id ?? $json.id ?? 'foto sconosciuta'}`\n  );\n}\n\nconst b64 = $json.data[0].b64_json;\nconst usage = $json.usage ?? {};\n\nconst startedMs = Number($json.l4_started_ms);\n\nconst apiLatencyMs = Number.isFinite(startedMs)\n  ? Date.now() - startedMs\n  : null;\n\n// Togliamo solo il payload base64 dal JSON,\n// ma conserviamo TUTTI gli altri campi originali\nconst { data, ...origine } = $json;\n\nreturn {\n  json: {\n    ...origine,\n\n    id_foto: $json.id,\n\n    l4_started_ms: startedMs,\n    api_latency_ms: apiLatencyMs,\n\n    input_tokens: usage.input_tokens ?? null,\n    output_tokens: usage.output_tokens ?? null,\n    total_tokens: usage.total_tokens ?? null,\n\n    usage\n  },\n\n  binary: {\n    data: {\n      data: b64,\n      mimeType: 'image/png',\n      fileName: `L4_${$json.photo_id}.png`\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        160
+      ],
+      "id": "c2328205-1d05-4c61-a0a8-1442fd1fd85c",
+      "name": "Parser"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1904,
+        160
+      ],
+      "id": "e4561702-8005-4cf9-a9a8-b281d784b73a",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfeecdda-ce06-4ca3-a0da-8e3ed88bf41d",
+              "name": "final_output_url",
+              "value": "={{ $json.secure_url }}",
+              "type": "string"
+            },
+            {
+              "id": "9650c5bc-e2e9-420d-97d2-5c320abde57b",
+              "name": "human_confirmation_required",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "869327aa-80a0-4874-9984-2db410c48d06",
+              "name": "final_status",
+              "value": "L4",
+              "type": "string"
+            },
+            {
+              "id": "a123703a-2a81-43e4-ac46-dee38d870e5f",
+              "name": "livello_applicato",
+              "value": "L4",
+              "type": "string"
+            },
+            {
+              "id": "83b6ba1f-5ad7-470b-ab1c-862ef039e890",
+              "name": "latenza_ms",
+              "value": "={{ Date.now() - Number($json.l4_started_ms) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2064,
+        160
+      ],
+      "id": "ba5af28d-2048-4a15-9c78-3e4e729ed672",
+      "name": "Finalizza L4"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfeecdda-ce06-4ca3-a0da-8e3ed88bf41d",
+              "name": "final_output_url",
+              "value": "={{ $json.url_input }}",
+              "type": "string"
+            },
+            {
+              "id": "9650c5bc-e2e9-420d-97d2-5c320abde57b",
+              "name": "human_confirmation_required",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "869327aa-80a0-4874-9984-2db410c48d06",
+              "name": "final_status",
+              "value": "RETAKE",
+              "type": "string"
+            },
+            {
+              "id": "ca1e3717-9185-4fa9-b80e-713366527a7a",
+              "name": "livello_applicato",
+              "value": "RETAKE",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        400
+      ],
+      "id": "df81c14b-05ae-4027-9dfb-9059b6110339",
+      "name": "Finalizza RETAKE"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\n\nlet status;\n\nif (d.route === 'L4') {\n  status = 'pending_human_confirmation';\n} else if (d.route === 'RETAKE') {\n  status = 'retake_required';\n} else {\n  status = 'completed';\n}\n\nreturn {\n  json: {\n    ...d,\n    status,\n    response: {\n      photo_id: d.photo_id,\n      route: d.route,\n      status,\n      output_url: d.route === 'RETAKE' ? null : d.final_output_url,\n      human_confirmation_required: d.human_confirmation_required,\n      motivo: d.route_motivo\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2816,
+        176
+      ],
+      "id": "10a06b3b-d1f0-4858-acf7-687c40438297",
+      "name": "Prepara Risposta"
+    },
+    {
+      "parameters": {
+        "tableId": "decisioni_finali",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "id_foto",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "livello_consigliato",
+              "fieldValue": "={{ $json.route === 'KEEP'\n  ? 'L0'\n  : $json.route === 'RETAKE'\n    ? null\n    : $json.route\n}}"
+            },
+            {
+              "fieldId": "categoria_instradamento",
+              "fieldValue": "={{ $json.route }}"
+            },
+            {
+              "fieldId": "motivazione_decisione",
+              "fieldValue": "={{ $json.route_motivo }}"
+            },
+            {
+              "fieldId": "diagnosis_version",
+              "fieldValue": "={{ $json.diagnosis_version }}"
+            },
+            {
+              "fieldId": "routing_version",
+              "fieldValue": "={{ $json.routing_version }}"
+            },
+            {
+              "fieldId": "final_output_url",
+              "fieldValue": "={{ $json.response.output_url }}"
+            },
+            {
+              "fieldId": "human_confirmation_required",
+              "fieldValue": "={{ $json.human_confirmation_required }}"
+            },
+            {
+              "fieldId": "stato_finale",
+              "fieldValue": "={{ $json.status }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        3024,
+        176
+      ],
+      "id": "6f05fca1-803e-4f7c-b4e7-aaaaf0d5161b",
+      "name": "Salva Decisione Finale"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "photo_quality",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1504,
+        16
+      ],
+      "id": "b45074c3-2aac-43ee-bda1-a869c22ab57d",
+      "name": "Webhook Upload Foto"
+    },
+    {
+      "parameters": {
+        "tableId": "foto",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "photo_id",
+              "fieldValue": "={{ $json.body.photo_id }}"
+            },
+            {
+              "fieldId": "nome_file",
+              "fieldValue": "={{ $json.body.nome_file }}"
+            },
+            {
+              "fieldId": "synthetic",
+              "fieldValue": "false"
+            },
+            {
+              "fieldId": "has_original",
+              "fieldValue": "false"
+            },
+            {
+              "fieldId": "url_input",
+              "fieldValue": "={{ $json.body.url_input }}"
+            },
+            {
+              "fieldId": "id_cloudinary_input",
+              "fieldValue": "={{ $json.body.id_cloudinary_input }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1312,
+        16
+      ],
+      "id": "72499ddf-97e8-4c4b-9053-7eda891552fa",
+      "name": "Create a row"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -800,
+        16
+      ],
+      "id": "47733ed8-354b-4f9f-9b96-6f5de444ab5b",
+      "name": "Merge Iniziale"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3488,
+        176
+      ],
+      "id": "ff6ccb8d-86e2-460e-a4cc-a42c2879d8fb",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  $json.route === 'L4'\n    ? {\n        ...$json.response,\n        decision_id: $json.decision_id\n      }\n    : $json.response\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3696,
+        176
+      ],
+      "id": "1837588d-9a9a-401e-ba9f-87e24890aecd",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "06b6b830-88c0-44ea-9298-86efbc90026b",
+              "name": "decision_id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3232,
+        176
+      ],
+      "id": "e4cbb355-15b0-49a7-8b36-b241365c4b55",
+      "name": "Aggiungi ID Decisione"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "decisioni_finali",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.body.decision_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "human_confirmation_esito",
+              "fieldValue": "={{ $json.body.esito }}"
+            },
+            {
+              "fieldId": "human_confirmation_il",
+              "fieldValue": "={{ new Date().toISOString() }}"
+            },
+            {
+              "fieldId": "stato_finale",
+              "fieldValue": "={{  $json.body.esito === 'confirmed'    ? 'completed'    : 'rejected'}}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        3904,
+        384
+      ],
+      "id": "fb39d96c-cbd0-4ce9-a748-e66640c2ffe5",
+      "name": "Update a row"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "confirm_l4",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        3696,
+        384
+      ],
+      "id": "c71dbbf3-f9cb-4956-b58b-64a695a68266",
+      "name": "Webhook Conferma L4"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{\n  {\n    decision_id: $json.id,\n    esito: $json.human_confirmation_esito,\n    stato_finale: $json.stato_finale\n  }\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        4112,
+        384
+      ],
+      "id": "63bd89fc-e197-4ec9-a237-e2e65a293f75",
+      "name": "Respond to Webhook1"
+    }
+  ],
+  "connections": {
+    "HTTP Request - Diagnosi FastAPI": {
+      "main": [
+        [
+          {
+            "node": "Merge Iniziale",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Prefiltro Colore": {
+      "main": [
+        [
+          {
+            "node": "Serve Triage Colore?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Serve Triage Colore?": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Scarica Immagine Cloudinary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Triage Colore",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Triage Colore": {
+      "main": [
+        [
+          {
+            "node": "Classifica Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsing": {
+      "main": [
+        [
+          {
+            "node": "Classifica Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Gemini VLM": {
+      "main": [
+        [
+          {
+            "node": "Parsing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Scarica Immagine Cloudinary": {
+      "main": [
+        [
+          {
+            "node": "Prepara Immagine Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara Immagine Base64": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Gemini VLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifica Route": {
+      "main": [
+        [
+          {
+            "node": "Switch Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Route": {
+      "main": [
+        [
+          {
+            "node": "Finalizza KEEP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepara L1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start L4 Timer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finalizza RETAKE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizza KEEP": {
+      "main": [
+        [
+          {
+            "node": "Prepara Risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara L1": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request L1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Finalizza L1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request L1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizza L1": {
+      "main": [
+        [
+          {
+            "node": "Prepara Risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudinary Upload": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "GPT Image": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start L4 Timer": {
+      "main": [
+        [
+          {
+            "node": "GPT Image",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser": {
+      "main": [
+        [
+          {
+            "node": "Cloudinary Upload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Finalizza L4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizza L4": {
+      "main": [
+        [
+          {
+            "node": "Prepara Risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizza RETAKE": {
+      "main": [
+        [
+          {
+            "node": "Prepara Risposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara Risposta": {
+      "main": [
+        [
+          {
+            "node": "Salva Decisione Finale",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Upload Foto": {
+      "main": [
+        [
+          {
+            "node": "Create a row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a row": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Diagnosi FastAPI",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Iniziale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Iniziale": {
+      "main": [
+        [
+          {
+            "node": "Prefiltro Colore",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggiungi ID Decisione": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Update a row": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Conferma L4": {
+      "main": [
+        [
+          {
+            "node": "Update a row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salva Decisione Finale": {
+      "main": [
+        [
+          {
+            "node": "Aggiungi ID Decisione",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}

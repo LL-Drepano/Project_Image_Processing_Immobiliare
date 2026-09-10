@@ -151,6 +151,8 @@ classificazione del difetto
 routing
 ```
 
+Questa separazione permette di modificare la policy di prodotto senza cambiare il significato delle metriche fotografiche.
+
 La diagnosi considera:
 
 * blur globale e locale;
@@ -179,6 +181,12 @@ clean / non-blur: massimo osservato ≈ 38% tessere sfocate
 blur sintetico:   minimo osservato ≈ 73%
 corridoio_04:     ≈ 81%
 ```
+
+### Un secondo esempio: dominante cromatica
+
+Le statistiche globali RGB/HSV non bastano a distinguere una dominante artificiale da contenuto realmente caldo o freddo: pareti beige, parquet, legno e illuminazione calda producono segnali simili a un color cast.
+
+È stato quindi introdotto `calculate_neutral_color_shift()`: l'immagine viene convertita in CIELAB e, sul 25% di pixel a croma più bassa, la distanza del vettore medio nei canali `a,b` produce `neutral_chroma_shift`. Il prefiltro invia a Gemini solo i casi ambigui (`neutral_chroma_shift >= 3`, regione neutra sotto il 5% o valore non calcolabile). Gemini determina se la dominante osservata sia plausibile per il contenuto reale della stanza oppure sospetta; il router riceve soltanto l'esito normalizzato: `normale`, `sospetto`, `incerto`.
 
 Il dettaglio delle metriche, delle soglie e delle iterazioni è in:
 
@@ -708,6 +716,8 @@ Le priorità principali sono:
 * hardening dell'upload e della delivery degli asset;
 * confronto tra configurazioni L4 con costo e qualità differenti.
 
+Un primo esperimento sulla direzionalità del blur è stato svolto durante il progetto, ma non è stato portato nel routing finale perché il set di casi reali era insufficiente per calibrare una soglia affidabile.
+
 Il prototipo usa attualmente GPT Image 2 con:
 
 ```text
@@ -715,6 +725,8 @@ quality = medium
 size = auto
 output = PNG
 ```
+
+Non è stato eseguito un benchmark tra `low` e `medium`, quindi il progetto non assume un vantaggio di fedeltà di `medium` rispetto a `low`.
 
 Un benchmark successivo potrebbe verificare se alcune recovery più semplici possono usare configurazioni meno costose, misurando qualità, fedeltà, costo e latenza.
 

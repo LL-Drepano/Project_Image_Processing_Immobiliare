@@ -135,7 +135,7 @@ Sono stati mantenuti anche controlli `do no harm` su fotografie sane per verific
 
 ---
 
-## Diagnosi deterministica
+## Diagnosi e routing
 
 La diagnosi è separata dal routing.
 
@@ -148,74 +148,31 @@ segnali raw
    ↓
 classificazione del difetto
    ↓
-routing prodotto
+routing
 ```
 
-Questa separazione permette di modificare la policy di prodotto senza cambiare il significato delle metriche fotografiche.
+La diagnosi considera:
 
-### Metodo
+* blur globale e locale;
+* rumore;
+* blocking JPEG;
+* esposizione;
+* risoluzione;
+* colore;
+* perdita quasi completa dell'informazione cromatica;
+* rischio di verificabilità dell'input.
 
-La diagnosi non parte da un unico metodo di calibrazione.
+Dove possibile sono state usate metriche già descritte in letteratura. Alcuni cutoff restano invece scelte operative del prototipo, verificate sul golden set.
 
-Dove possibile utilizza metriche o principi già descritti in letteratura. Le regole operative trasformano poi questi segnali continui in categorie utilizzabili dal router.
+I segnali raw vengono salvati insieme alla classificazione.
 
-Il golden set viene usato soprattutto per:
+### Un esempio: blur locale
 
-* verificare il comportamento sui difetti noti;
-* controllare i falsi positivi sulle fotografie pulite;
-* confrontare input degradati e originali quando disponibili;
-* stressare le regole con degradazioni sintetiche controllate;
-* verificare l'intera pipeline alle stesse condizioni del servizio reale.
+La prima versione usava una misura globale di blur. In alcuni casi una zona nitida compensava parti significativamente sfocate dell'immagine.
 
-Non tutte le soglie hanno quindi la stessa origine.
+`corridoio_04` era uno di questi casi.
 
-Per alcune misure esiste una base metodologica pubblicata; per altre il cutoff è una scelta operativa del prototipo, verificata sui dati disponibili. I segnali raw vengono mantenuti insieme alla classificazione per rendere queste decisioni ispezionabili.
-
-### Blur
-
-Il segnale principale è `blur_effect` di `scikit-image`, basato sulla metrica no-reference di Crété-Roffet et al.
-
-La metrica restituisce un valore crescente con il blur.
-
-Per rendere confrontabili le immagini, la diagnosi normalizza il lato massimo a 1280 px senza effettuare upscale.
-
-Le soglie già utilizzate nella diagnosi sono:
-
-```text
-blur_effect >= 0.70  → high
-blur_effect >= 0.55  → medium
-blur_effect >= 0.40  → low
-```
-
-Le originali pulite disponibili restavano sotto circa `0.37`, quindi il benchmark ha anche fornito un controllo empirico sul margine della soglia `low`.
-
-Se il detector del rumore è alto mentre `blur_effect` resta sotto soglia, il risultato può essere marcato `uncertain`, perché il rumore interferisce con le misure di alta frequenza.
-
-#### Blur locale
-
-Il limite pratico di una metrica globale è che una zona molto nitida può compensare aree significativamente sfocate.
-
-L'uso di misure di blur a blocchi è già presente nella letteratura sulla stima no-reference della nitidezza. La v5 applica quindi la stessa metrica su una griglia 4×4.
-
-Non viene introdotto un nuovo blur score: ogni tessera usa la stessa soglia `low` già presente nella diagnosi.
-
-Le tessere quasi uniformi vengono escluse:
-
-```text
-std < 0.02
-```
-
-Una tessera informativa viene considerata sfocata con:
-
-```text
-blur_effect >= 0.40
-```
-
-Se più della metà delle tessere informative è sfocata, la classificazione globale viene portata almeno a `medium`.
-
-Un primo test era stato eseguito usando `0.55` come soglia per tessera. Nel servizio finale è stata riutilizzata `0.40`, già esistente come soglia `low`, ottenendo una separazione più netta.
-
-Sul golden set finale:
+È stata quindi aggiunta la stessa metrica su una griglia 4×4, escludendo le tessere quasi uniformi. Nel golden set finale:
 
 ```text
 clean / non-blur: massimo osservato ≈ 38% tessere sfocate
@@ -223,220 +180,7 @@ blur sintetico:   minimo osservato ≈ 73%
 corridoio_04:     ≈ 81%
 ```
 
-Il tile blur ha quindi corretto casi in cui la metrica globale sottostimava un degrado distribuito sull'immagine senza introdurre un nuovo cutoff di blur.
-
-### Rumore
-
-Come primo segnale è stato utilizzato `noise_sigma`, stimato tramite wavelet.
-
-Nei test, però, fotografie pulite potevano presentare valori elevati anche senza degradazione sintetica. `noise_sigma` viene quindi conservato come informazione diagnostica, ma non è diventato il discriminante principale.
-
-Il segnale risultato più utile nel prototipo è:
-
-```text
-high_frequency_ratio =
-varianza Laplaciano raw
-────────────────────────
-varianza Laplaciano dopo smoothing
-```
-
-La regola corrente è:
-
-```text
-HF >= 80
-OR
-(HF >= 50 AND blur_effect >= 0.50)
-→ noise = high
-```
-
-Sul golden set ha individuato i **3/3 casi di rumore sintetico** senza falsi positivi sulle 29 originali pulite disponibili.
-
-Questa classificazione resta una euristica sperimentale del prototipo.
-
-### Compressione JPEG
-
-Il detector sfrutta una proprietà strutturale della compressione JPEG: il blocking tende a produrre discontinuità lungo la griglia 8×8.
-
-`calculate_jpeg_blockiness()` confronta le differenze tra pixel sui confini dei blocchi con quelle presenti sulle linee immediatamente adiacenti.
-
-La misura viene eseguita sull'immagine originale, senza resize, per non alterare la griglia JPEG.
-
-```text
-blockiness_ratio = boundary_mean / neighbor_mean
-jpeg_blockiness  = blockiness_ratio - 1
-```
-
-La soglia si applica a `jpeg_blockiness`, non al ratio.
-
-Le originali pulite arrivavano circa a `1.04`. La regola operativa del prototipo usa:
-
-```text
-jpeg_blockiness < 1.20
-→ none
-
-jpeg_blockiness >= 1.20 + blur presente
-→ uncertain
-
-jpeg_blockiness >= 1.20 senza blur
-→ high
-```
-
-Il detector è orientato soprattutto al blocking forte. Compressioni più moderate possono non essere rilevate.
-
-### Esposizione
-
-L'esposizione usa statistiche derivate dalla distribuzione di luminanza:
-
-* luminanza media e mediana;
-* percentili `p05` e `p95`;
-* percentuale di ombre prossime al nero;
-* percentuale di alte luci prossime al bianco.
-
-Per la sottoesposizione:
-
-```text
-mean_luminance < 35
-OR shadows_clipped_pct >= 20
-→ high
-
-mean_luminance < 70
-OR shadows_clipped_pct >= 10
-→ medium
-
-mean_luminance < 100
-→ low
-```
-
-Questi cutoff servono a trasformare un segnale continuo in una severity utile al router.
-
-Per la sovraesposizione il solo highlight clipping è risultato insufficiente: finestre, pareti o superfici realmente bianche possono produrre valori elevati senza rendere washed-out l'intera fotografia.
-
-Il confronto paired tra input degradati e originali puliti ha quindi portato a combinare:
-
-* luminanza media;
-* `p95_luminance`;
-* clipping delle alte luci;
-* saturazione media.
-
-La classificazione corrente è:
-
-```text
-mean >= 240
-AND p95 >= 250
-AND highlights clipped >= 20%
-AND mean saturation < 50
-→ high
-
-mean >= 220
-AND p95 >= 245
-AND mean saturation < 50
-→ medium
-
-mean >= 205
-AND p95 >= 245
-AND mean saturation < 50
-→ low
-```
-
-Nel golden set questa combinazione separa i casi di white blend osservati senza trattare come sovraesposta ogni scena contenente alte luci legittime.
-
-### Risoluzione
-
-La risoluzione è trattata come policy distinta dai detector fotografici.
-
-```text
-min_side <= 500  → high
-min_side < 720   → medium
-min_side < 1080  → low
-altrimenti       → none
-```
-
-La misura esprime quanta informazione spaziale è disponibile per un'eventuale recovery. Non viene usata per inferire la compressione.
-
-### Colore
-
-I primi test consideravano statistiche globali RGB/HSV, tra cui:
-
-* `color_cast_score`;
-* `warm_cool_score`;
-* saturazione media.
-
-Il confronto con le originali pulite ha mostrato che queste misure non bastano a distinguere una dominante artificiale da contenuto realmente caldo o freddo.
-
-Pareti beige, parquet, legno, illuminazione calda e luce naturale possono produrre segnali globali simili a un color cast.
-
-È stato quindi introdotto `calculate_neutral_color_shift()`.
-
-L'immagine viene convertita in CIELAB. Vengono considerati pixel con:
-
-```text
-20 <= L <= 95
-```
-
-e, tra questi, il 25% con croma più bassa.
-
-La distanza del vettore medio nei canali `a,b` produce:
-
-```text
-neutral_chroma_shift
-```
-
-Il prefiltro usa:
-
-```text
-neutral_chroma_shift == null
-OR neutral_chroma_shift >= 3
-OR neutral_region_pct < 5
-→ triage Gemini
-```
-
-La soglia `3` è una scelta empirica del prefiltro.
-
-Gemini interviene solo nei casi ambigui e determina se la dominante osservata sia plausibile per il contenuto reale della stanza oppure sospetta.
-
-Il router riceve soltanto l'esito normalizzato:
-
-```text
-normale
-sospetto
-incerto
-```
-
-### Fotografie monocromatiche
-
-Un caso separato riguarda la perdita quasi completa dell'informazione cromatica.
-
-Un'immagine in scala di grigi ideale ha saturazione pari a zero. Una fotografia JPEG memorizzata in RGB può però acquisire qualche unità di rumore cromatico dalla compressione.
-
-Per evitare che questo rumore venga interpretato come colore reale, la diagnosi utilizza `p95_saturation` invece della sola media:
-
-```text
-p95_saturation < 8
-→ RETAKE
-```
-
-Il significato è: anche il 5% dei pixel più saturi contiene una quantità trascurabile di colore.
-
-Nel golden set:
-
-```text
-corridoio_04: p95_saturation = 0
-altre 29 foto: p95_saturation >= 30
-```
-
-La soglia `8` resta quindi sopra il rumore cromatico atteso per un'immagine sostanzialmente grayscale e molto sotto il minimo osservato sulle fotografie a colori.
-
-La regola copre il bianco e nero puro o quasi puro. Non identifica necessariamente immagini seppia o altri viraggi con saturazione non nulla.
-
-### Verifiability risk
-
-I singoli detector vengono infine combinati in `calculate_verifiability_risk()`.
-
-Il segnale non misura quanto una fotografia sia esteticamente buona. Stima quanto sia difficile verificare la correttezza di un eventuale output ricostruttivo sulla base dell'informazione ancora presente nell'input.
-
-Il risultato alimenta successivamente il recoverability gate.
-
-Il codice e il razionale completo sono documentati in:
+Il dettaglio delle metriche, delle soglie e delle iterazioni è in:
 
 [`docs/diagnosi_e_routing.md`](docs/diagnosi_e_routing.md)
 
@@ -757,36 +501,17 @@ Metodo e risultati completi:
 
 ---
 
-## Persistenza e tracciabilità sperimentale
+## Persistenza
 
-Supabase contiene **11 tabelle persistenti** e **4 view analitiche**.
+Supabase salva:
 
-Le strutture coprono sia il prototipo finale sia le diverse fasi del benchmark.
-
-### Tabelle
-
-| Tabella                   | Ruolo                                               |
-| ------------------------- | --------------------------------------------------- |
-| `foto`                    | metadati delle fotografie e del golden set          |
-| `esecuzioni`              | fan-out L0–L4, provider, output, latenza e costo    |
-| `metriche`                | metriche fotografiche calcolate sugli output        |
-| `confronti_giudice`       | confronti pairwise del judge automatico             |
-| `controlli_fedelta`       | controlli automatici input degradato → output       |
-| `controlli_fedelta_clean` | controlli offline clean original → output           |
-| `voti_umani`              | prima struttura di raccolta delle valutazioni umane |
-| `reference_qualita_umane` | reference strutturata dei confronti di qualità      |
-| `reference_fedelta_umane` | reference manuale delle alterazioni materiali       |
-| `diagnosi_input`          | diagnosi persistita degli input degradati           |
-| `decisioni_finali`        | risultato del routing produttivo e conferma L4      |
-
-### View analitiche
-
-| View                         | Ruolo                                             |
-| ---------------------------- | ------------------------------------------------- |
-| `review_qualita_images`      | espone gli URL L0–L4 alla mini UI di review       |
-| `confronto_fedelta_checker`  | confronta i risultati del checker automatico      |
-| `recoverability_l4_basic`    | unisce failure L4 e caratteristiche dell'input    |
-| `recoverability_gate_result` | applica e valuta il candidate recoverability gate |
+* fotografie e metadati del golden set;
+* esecuzioni L0–L4, output, latenza e costo;
+* metriche fotografiche;
+* reference umane di qualità e fedeltà;
+* risultati dei checker;
+* diagnosi degli input;
+* decisioni finali e conferme L4.
 
 Il DDL completo è disponibile in:
 
@@ -929,31 +654,18 @@ Le API key e le altre credenziali restano nell'istanza n8n e non sono incluse ne
 
 ### Implementato e testato
 
-* golden set;
-* degradazioni e fan-out L0–L4;
-* 150 esecuzioni del benchmark principale;
-* metriche fotografiche;
-* diagnosi deterministica;
-* blur globale e a tessere;
-* detector di blockiness JPEG;
-* segnali di esposizione, rumore, risoluzione e colore;
+* golden set e degradazioni;
+* fan-out L0–L4 e 150 esecuzioni;
+* diagnosi fotografica;
 * mini UI di review;
-* reference umana di qualità;
-* reference umana di fedeltà;
+* reference umana di qualità e fedeltà;
 * benchmark del checker automatico;
-* analisi di recoverability;
-* candidate recoverability gate;
-* diagnosis-service;
-* prefiltro colore;
-* triage Gemini;
+* analisi e candidate gate di recoverability;
 * routing finale;
 * workflow n8n;
-* Cloudinary;
-* GPT Image;
-* Supabase;
-* conferma e rifiuto L4;
-* Upload UI;
-* Lab UI;
+* integrazioni Cloudinary, GPT Image, Gemini e Supabase;
+* Upload UI e Lab UI;
+* conferma e rifiuto degli output L4;
 * benchmark di costo e latenza.
 
 ### Simulato o limitato al prototipo
@@ -987,9 +699,16 @@ Ulteriori dettagli:
 
 ## Sviluppi successivi
 
-### Adaptive L4 cost routing
+Le priorità principali sono:
 
-Il prototipo usa GPT Image 2 con:
+* dataset più ampio con degradazioni reali;
+* review multi-rater;
+* calibrazione indipendente del recoverability gate;
+* detector più affidabile per distinguere motion blur e defocus;
+* hardening dell'upload e della delivery degli asset;
+* confronto tra configurazioni L4 con costo e qualità differenti.
+
+Il prototipo usa attualmente GPT Image 2 con:
 
 ```text
 quality = medium
@@ -997,42 +716,7 @@ size = auto
 output = PNG
 ```
 
-per tutti i casi L4.
-
-Non è stato eseguito un benchmark tra `low` e `medium`, quindi il progetto non assume un vantaggio di fedeltà di `medium` rispetto a `low`.
-
-Un'estensione prevista è scegliere la configurazione L4 in base al tipo di degradazione.
-
-Per esempio:
-
-```text
-recovery prevalentemente fotometrica
-→ valutare quality = low
-
-blur / compressione / perdita di dettaglio
-→ mantenere quality = medium
-```
-
-La scelta andrebbe validata misurando:
-
-* qualità;
-* fedeltà;
-* costo;
-* latenza.
-
-Lo stesso benchmark potrebbe includere eventuali modelli image più economici disponibili come modelli API supportati.
-
-### Diagnosi
-
-Altri sviluppi:
-
-* dataset più ampio con degradazioni reali;
-* review multi-rater;
-* calibrazione indipendente del recoverability gate;
-* detector più affidabile per distinguere motion blur e defocus;
-* hardening dell'upload e della delivery degli asset.
-
-Un primo esperimento sulla direzionalità del blur è stato svolto durante il progetto, ma non è stato portato nel routing finale perché il set di casi reali era insufficiente per calibrare una soglia affidabile.
+Un benchmark successivo potrebbe verificare se alcune recovery più semplici possono usare configurazioni meno costose, misurando qualità, fedeltà, costo e latenza.
 
 ---
 
